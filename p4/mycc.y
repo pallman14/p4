@@ -39,6 +39,8 @@ static int is_in_main = 0;
   char *str;    /* token value yylval.str is the value of a string constant */
   unsigned loc; /* location of instruction to backpatch */
   Type typ;	/* type descriptor */
+  Expr exp;
+  Entry *ent;
 }
 
 /* declare ID token and its attribute type */
@@ -257,8 +259,20 @@ stmt    : ';'
                         { error("while-loop not implemented"); }
         | DO L stmt WHILE '(' expr ')' K ';'
                         { error("do-while-loop not implemented"); }
-        | FOR '(' expr P ';' L expr M N ';' L expr P N ')' L stmt N
-                        { error("for-loop not implemented"); }
+        | FOR '(' Pexpr ';' L expr M N ';' L Pexpr N ')' B L stmt N
+                        { if (!$6.type)
+			  {	backpatchlist($6.truelist, $15);
+				backpatchlist($6.falselist, pc);
+			  }
+			  else if (!isint($6.type))
+			  	error("Type error");
+                          backpatch($7, pc - $7);
+                          backpatch($8, $15 - $8);
+			  backpatch($12, $5 - $12);
+			  backpatch($17, $10 - $17);
+			  // backpatch goto of break statement
+			  backpatchlist(breaks[level--], pc);
+			}
         | RETURN expr ';'
                         { coerce1(&$2, ret_type);
 			  if (is_in_main) {
@@ -281,22 +295,50 @@ stmt    : ';'
         ;
 
 exprs	: exprs ',' expr
-	| expr
+			{ decircuit(&$3); }
+	| expr		{ decircuit(&$1); }
 	;
 
 /* TASK 1: TO BE COMPLETED (use pr3 code, then work on assign operators): */
-expr    : ID   '=' expr { error("= operator not implemented"); }
-        | ID   PA  expr { error("+= operator not implemented"); }
-        | ID   NA  expr { error("-= operator not implemented"); }
-        | ID   TA  expr { error("*= operator not implemented"); }
+expr    : ID   '=' expr { $$ = emitas($1, &$3, nop, nop); }
+        | ID   PA  expr { $$ = emitas($1, &$3, iadd, fadd); }
+        | ID   NA  expr { $$ = emitas($1, &$3, isub, fsub); }
+        | ID   TA  expr { $$ = emitas($1, &$3, imul, fmul); }
         | ID   DA  expr { $$ = emitas($1, &$3, idiv, fdiv); }
-        | ID   MA  expr { error("%= operator not implemented"); }
-        | ID   AA  expr { error("&= operator not implemented"); }
-        | ID   XA  expr { error("^= operator not implemented"); }
-        | ID   OA  expr { error("|= operator not implemented"); }
-        | ID   LA  expr { error("<<= operator not implemented"); }
-        | ID   RA  expr { error(">>= operator not implemented"); }
-        | expr OR  expr { error("|| operator not implemented"); }
+        | ID   MA  expr { $$ = emitas($1, &$3, irem, nop); }
+        | ID   AA  expr { $$ = emitas($1, &$3, iand, nop); }
+        | ID   XA  expr { $$ = emitas($1, &$3, ixor, nop); }
+        | ID   OA  expr { $$ = emitas($1, &$3, ior, nop); }
+        | ID   LA  expr { $$ = emitas($1, &$3, ishl, nop); }
+        | ID   RA  expr { $$ = emitas($1, &$3, ishr, nop); }
+        | expr OR L expr
+			{ $$.type = NULL;
+			  if ($1.type && $4.type)
+			  {	// both operands are non-short-circuit
+			  	if (isint($1.type) && isint($4.type)) {
+			  		emit3(ifeq, 5);
+			  		emit(pop);
+					emit(iconst_1);
+					$$ = circuit(&$4);
+			  	} else {
+					error("Type error");
+				}
+			  } else if ($4.type) {
+			  	Expr e = circuit(&$4);
+			  	$$.truelist = mergelist($1.truelist, e.truelist);
+				backpatchlist($1.falselist, $3);
+				$$.falselist = e.falselist;
+			  } else if ($1.type) {
+			  	Expr e = circuit(&$1);
+			  	$$.truelist = mergelist(e.truelist, $4.truelist);
+				backpatchlist(e.falselist, $3);
+				$$.falselist = $4.falselist;
+			  } else {
+			  	$$.truelist = mergelist($1.truelist, $4.truelist);
+				backpatchlist($1.falselist, $3);
+				$$.falselist = $4.falselist;
+			  }
+			}
         | expr AN  expr { error("&& operator not implemented"); }
         | expr '|' expr { error("| operator not implemented"); }
         | expr '^' expr { error("^ operator not implemented"); }
@@ -329,9 +371,17 @@ expr    : ID   '=' expr { error("= operator not implemented"); }
         | '!' expr      { error("! operator not implemented"); }
         | '~' expr      { error("~ operator not implemented"); }
         | '+' expr %prec '!'
-                        { error("unary + operator not implemented"); }
+                        { $$ = $2; }
         | '-' expr %prec '!'
-                        { error("unary - operator not implemented"); }
+                        { $$.truelist = $$.falselist = NULL;
+			  $$.type = decircuit(&$2);
+			  if (isint($$.type))
+				emit(ineg);
+			  else if (isfloat($$.type))
+				emit(fneg);
+			  else
+			  	error("Type error");
+			}
         | '(' expr ')'
         | '$' INT8      { // check that we are in main()
 			  if (is_in_main)
@@ -460,3 +510,125 @@ static Type coerce2(Expr *expr, Type type) {
 
     return rc;
 }
+
+/* Convert integer to short-circuit, no change when already short circuit */
+static Expr circuit(Expr *expr) {
+    Expr result;
+
+    if (!expr->type) {
+	result = *expr;
+    } else if (isint(expr->type)) {
+	result.falselist = makelist(pc);
+	emit3(ifeq, 0);
+	result.truelist = makelist(pc);
+	emit3(goto_, 0);
+    } else {
+	error("Type error");
+    }
+
+    result.type = expr->type;
+
+    return result;
+}
+
+/* Convert short-circuit logic to push of int 0 or 1 by backpatching */
+static Type decircuit(Expr *expr) {
+    Type rc;
+    if (expr->type) {
+	rc = expr->type;
+    } else {
+	backpatchlist(expr->falselist, pc);
+	emit(iconst_0);
+	emit3(goto_, 4);
+	backpatchlist(expr->truelist, pc);
+	emit(iconst_1);
+
+	rc = mkint();
+    }
+
+    return rc;
+}
+
+/* Coerce and return the wider type (int or float) of two types */
+static Type widen(Expr *expr1, Expr *expr2) {
+    Type type;
+
+    if (isfloat(expr1->type)) {
+	type = expr1->type;
+    } else if (isfloat(expr2->type)) {
+	type = expr2->type;
+    } else {
+	type = mkint();
+    }
+
+    coerce1(expr2, type);
+    coerce2(expr1, type);
+
+    return type;
+}
+
+/* Emit float/integer operation */
+static Expr emitop(Expr *expr1, Expr *expr2, int iop, int fop) {
+    Expr result;
+
+    result.truelist = result.falselist = NULL;
+    result.type = widen(expr1, expr2);
+
+    if (isint(result.type)) {
+	emit(iop);
+    } else if (isfloat(result.type) && fop != nop) {
+	emit(fop);
+    } else {
+	error("Type error");
+    }
+
+    return result;
+}
+
+/* Emit float/integer assignment operation */
+static Expr emitas(Symbol *sym, Expr *expr, int iop, int fop) {
+    Expr result;
+    int place;
+    Type type;
+
+    result.truelist = result.falselist = NULL;
+
+    place = getplace(top_tblptr, sym);
+    type = gettype(top_tblptr, sym);
+    result.type = coerce1(expr, type);
+    if (getlevel(top_tblptr, sym) == 0) {
+    	if (iop != nop) {
+	    emit3(getstatic, place);
+	    emit(swap);
+	    if (isint(result.type)) {
+		emit(iop);
+	    } else if (isfloat(result.type) && fop != nop) {
+		emit(fop);
+	    } else {
+		error("Type error");
+	    }
+	}
+	emit(dup);
+	emit3(putstatic, place);
+    } else if (isint(result.type)) {
+    	if (iop != nop) {
+	    emit2(iload, place);
+	    emit(swap);
+	    emit(iop);
+	}
+	emit(dup);
+	emit2(istore, place);
+    } else if (isfloat(result.type) && (iop == nop || fop != nop)) {
+    	if (iop != nop) {
+	    emit2(fload, place);
+	    emit(swap);
+	    emit(fop);
+	}
+	emit(dup);
+	emit2(fstore, place);
+    } else {
+	error("Type error");
+    }
+
+    return result;
+} 
