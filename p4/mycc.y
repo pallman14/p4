@@ -242,8 +242,15 @@ stmts   : stmts stmt
 /* TASK 1: TO BE COMPLETED: */
 stmt    : ';'
         | expr ';'      { emit(pop); }
-        | IF '(' expr ')' M stmt
-                        { error("if-then not implemented"); }
+        | IF '(' expr ')' M L stmt
+                        { if (!$3.type) {
+			  	backpatchlist($3.truelist, $6);
+				backpatchlist($3.falselist, pc);
+			  } else if (!isint($3.type)) {
+			  	error("Type error");
+			  }
+			  backpatch($5, pc - $5);
+			}
         | IF '(' expr ')' M stmt ELSE N stmt
                         { error("if-then-else not implemented"); }
         | WHILE '(' L expr ')' M stmt N
@@ -253,10 +260,18 @@ stmt    : ';'
         | FOR '(' expr P ';' L expr M N ';' L expr P N ')' L stmt N
                         { error("for-loop not implemented"); }
         | RETURN expr ';'
-                        { if (is_in_main)
-			  	emit(istore_2); /* TO BE COMPLETED */
-			  else
-			  	error("return int/float not implemented");
+                        { coerce1(&$2, ret_type);
+			  if (is_in_main) {
+				emit(istore_2);
+			  } else {
+			  	if (isint(ret_type)) {
+					emit(ireturn);
+			  	} else if (isfloat(ret_type)) {
+					emit(freturn);
+			  	} else {
+					error("Type error");
+			        }
+			  }
 			}
 	| BREAK ';'	{ /* BREAK is optional to implement (see Pr3) */
 			  error("break not implemented");
@@ -274,7 +289,7 @@ expr    : ID   '=' expr { error("= operator not implemented"); }
         | ID   PA  expr { error("+= operator not implemented"); }
         | ID   NA  expr { error("-= operator not implemented"); }
         | ID   TA  expr { error("*= operator not implemented"); }
-        | ID   DA  expr { error("/= operator not implemented"); }
+        | ID   DA  expr { $$ = emitas($1, &$3, idiv, fdiv); }
         | ID   MA  expr { error("%= operator not implemented"); }
         | ID   AA  expr { error("&= operator not implemented"); }
         | ID   XA  expr { error("^= operator not implemented"); }
@@ -290,7 +305,19 @@ expr    : ID   '=' expr { error("= operator not implemented"); }
         | expr NE  expr { error("!= operator not implemented"); }
         | expr '<' expr { error("< operator not implemented"); }
         | expr '>' expr { error("> operator not implemented"); }
-        | expr LE  expr { error("<= operator not implemented"); }
+        | expr LE  expr { $$.type = widen(&$1, &$3);
+			  if (isint($$.type)) {
+			  	$$.truelist = makelist(pc);
+			  	emit3(if_icmple, 0);
+			  } else if (isfloat($$.type)) {
+			  	emit(fcmpg);
+			  	$$.truelist = makelist(pc);
+			  	emit3(ifeq, 0);
+			  }
+			  $$.falselist = makelist(pc);
+			  emit3(goto_, 0);
+			  $$.type = NULL;
+			}
         | expr GE  expr { error(">= operator not implemented"); }
         | expr LS  expr { error("<< operator not implemented"); }
         | expr RS  expr { error(">> operator not implemented"); }
@@ -395,4 +422,41 @@ int main(int argc, char **argv)
 
 	return 0;
 }
+/* Coerce value on top of stack */
+static Type coerce1(Expr *expr, Type type) {
+    Type conv;
+    Type rc;
 
+    if (iseq(expr->type, type)) {
+	rc = type;
+    } else {
+	conv = decircuit(expr);
+	if (isint(conv) && isfloat(type)) {
+	    emit(i2f);
+	} else if (isfloat(conv) && isint(type)) {
+	    emit(f2i);
+	}
+	rc = type;
+    }
+
+    return rc;
+}
+
+/* Coerce value under top of stack */
+static Type coerce2(Expr *expr, Type type) {
+    Type conv;
+    Type rc;
+
+    if (iseq(expr->type, type)) {
+	rc = type;
+    } else {
+	if (expr->type) {
+	    emit(swap);
+	}
+	conv = coerce1(expr, type);
+	emit(swap);
+	rc = conv;
+    }
+
+    return rc;
+}
