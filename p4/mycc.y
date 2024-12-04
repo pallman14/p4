@@ -1,4 +1,8 @@
-/* TO BE COMPLETED */
+/*
+Price, Chris, Gorana, Lian
+GCSC 554
+File: mycc.y
+*/
 
 %{
 
@@ -76,7 +80,7 @@ static int is_in_main = 0;
 
 /* Declare attribute types for marker nonterminals, such as K L M and N */
 /* TODO: TO BE COMPLETED WITH ADDITIONAL NONMARKERS AS NECESSARY */
-%type <loc> K L M N
+%type <loc> K L M N P B
 
 %type <typ> type list args
 
@@ -183,8 +187,10 @@ Mmain	:		{ int label1, label2;
 			}
 	;
 
-Margs	:		{ /* TASK 3: TO BE COMPLETED */
-			  // Table *table =
+Margs	:		{  Table *table;
+			  table = mktable(top_tblptr);
+			  push_tblptr(table);
+			  push_offset(0);
 			  init_code();
 			  is_in_main = 0;
 			}
@@ -224,13 +230,33 @@ args	: args ',' type ID
 list	: list ',' ID
 			{ /* TASK 1 and 4: TO BE COMPLETED */
 			  /* $1 is the type */
-			  /* $3 == 1 means pointer type for ID, e.g. char* so use mkstr() */
+			if (top_tblptr -> level == 0) {
+				cf.fields[cf.field_count].access = ACC_STATIC;
+            			cf.fields[cf.field_count].name = $3->lexptr;
+            			cf.fields[cf.field_count].descriptor = $1;
+            			cf.field_count++;
+           			enter(top_tblptr, $3, $1, constant_pool_add_Fieldref(&cf, cf.name, $3->lexptr, $1));
+           		
+			} else if(top_tblptr -> level > 0){
+         			enter(top_tblptr, $3, $1, top_offset++);
+         		}
+        		
+			$$ = $1;
+		}
+	| type ID	
+		{
+			if (top_tblptr -> level == 0){
+				cf.fields[cf.field_count].access = ACC_STATIC;
+            			cf.fields[cf.field_count].name = $2->lexptr;
+            			cf.fields[cf.field_count].descriptor = $1;
+            			cf.field_count++;
+            			enter(top_tblptr, $2, $1, constant_pool_add_Fieldref(&cf, cf.name, $2->lexptr, $1));
+
+			  } else if(top_tblptr -> level > 0) {
+			  	enter(top_tblptr, $2, $1, top_offset++);
+			  	
+			  }
 			  $$ = $1;
-			}
-	| type ID	{ /* TASK 1 and 4: TO BE COMPLETED */
-			  /* $2 == 1 means pointer type for ID, e.g. char* so use mkstr() */
-			  $$ = $1;
-			}
 	;
 
 ptr	: /* empty */	{ $$ = 0; }
@@ -245,7 +271,8 @@ stmts   : stmts stmt
 stmt    : ';'
         | expr ';'      { emit(pop); }
         | IF '(' expr ')' M L stmt
-                        { if (!$3.type) {
+                        { 
+			if (!$3.type) {
 			  	backpatchlist($3.truelist, $6);
 				backpatchlist($3.falselist, pc);
 			  } else if (!isint($3.type)) {
@@ -253,12 +280,40 @@ stmt    : ';'
 			  }
 			  backpatch($5, pc - $5);
 			}
-        | IF '(' expr ')' M stmt ELSE N stmt
-                        { error("if-then-else not implemented"); }
-        | WHILE '(' L expr ')' M stmt N
-                        { error("while-loop not implemented"); }
+        | IF '(' expr ')' M L stmt ELSE N L stmt
+                {
+			if (!$3.type) {
+				backpatchlist($3.truelist, $6);
+				backpatchlist($3.falselist, $10);
+			} else if (!isint($3.type)) {
+				error("Type error IFELSE");
+			}
+			backpatch($5, $10 - $5);
+			backpatch($9, pc - $5);
+		}
+
+	| WHILE '(' L expr ')' M L stmt N
+                {
+			if (!$4.type) {
+				backpatchlist($4.truelist, $7);
+				backpatchlist($4.falselist, pc);
+			} else if (!isint($4.type)) {
+				error("Type error WHILE");
+			}
+			backpatch($6, pc - $6);
+			backpatch($9, $3 - $9);
+		}
+
         | DO L stmt WHILE '(' expr ')' K ';'
-                        { error("do-while-loop not implemented"); }
+		{
+			if (!$6.type) {
+				backpatchlist($6.truelist, $2);
+				backpatchlist($6.falselist, pc);
+			} else if (!isint($6.type)) {
+				error("Type error DOWHILE");
+			}
+			backpatch($8,$2-$8);
+		}
         | FOR '(' Pexpr ';' L expr M N ';' L Pexpr N ')' B L stmt N
                         { if (!$6.type)
 			  {	backpatchlist($6.truelist, $15);
