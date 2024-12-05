@@ -394,14 +394,48 @@ expr    : ID   '=' expr { $$ = emitas($1, &$3, nop, nop); }
 				$$.falselist = $4.falselist;
 			  }
 			}
-        | expr AN  expr { error("&& operator not implemented"); }
+        | expr AN  expr {
+			$$.type = NULL;
+			if ($1.type && $4.type) {
+				if (isint($1.type) && isint($4.type)) {
+					emit3(ifne, 5);
+					emit(pop);
+					emit(iconst_0);
+					$$ = circuit(&$4);
+				} else {
+					error("Type error");
+				}
+			} else if ($4.type) {
+				Expr e = circuit(&$4);
+				$$.falselist = mergelist($1.falselist, e.falselist);
+				backpatchlist($1.truelist, $3);
+				$$.truelist = e.truelist;
+			} else if ($1.type) {
+				Expr e = circuit(&$1);
+				$$.falselist = mergelist(e.falselist, $4.falselist);
+				backpatchlist(e.truelist, $3);
+				$$.truelist = $4.truelist;
+			} else {
+				$$.falselist = mergelist($1.falselist, $4.falselist);
+				backpatchlist($1.truelist, $3);
+				$$.truelist = $4.truelist;
+			}
+			}
         | expr '|' expr { error("| operator not implemented"); }
         | expr '^' expr { error("^ operator not implemented"); }
         | expr '&' expr { error("& operator not implemented"); }
-        | expr EQ  expr { error("== operator not implemented"); }
-        | expr NE  expr { error("!= operator not implemented"); }
-        | expr '<' expr { error("< operator not implemented"); }
-        | expr '>' expr { error("> operator not implemented"); }
+        | expr EQ  expr { 
+				emitcmp(&$1, &$3, if_icmpeq); 
+			}
+        | expr NE  expr {
+				emitcmp(&$1, &$3, if_icmpne);
+			}
+        | expr '<' expr { 
+				emitcmp(&$1, &$3, if_icmplt);
+			}
+        | expr '>' expr {
+				emitcmp(&$1, &$3, if_icmpgt);
+			}
         | expr LE  expr { $$.type = widen(&$1, &$3);
 			  if (isint($$.type)) {
 			  	$$.truelist = makelist(pc);
@@ -415,15 +449,34 @@ expr    : ID   '=' expr { $$ = emitas($1, &$3, nop, nop); }
 			  emit3(goto_, 0);
 			  $$.type = NULL;
 			}
-        | expr GE  expr { error(">= operator not implemented"); }
-        | expr LS  expr { error("<< operator not implemented"); }
-        | expr RS  expr { error(">> operator not implemented"); }
-        | expr '+' expr { error("+ operator not implemented"); }
-        | expr '-' expr { error("- operator not implemented"); }
-        | expr '*' expr { error("* operator not implemented"); }
-        | expr '/' expr { error("/ operator not implemented"); }
-        | expr '%' expr { error("% operator not implemented"); }
-        | '!' expr      { error("! operator not implemented"); }
+        | expr GE  expr {
+				emitcmp(&$1, &$3, if_icmpge);
+			}
+        | expr LS  expr { $$ = emitop(&$1,&$3,ishl,nop); } 
+        | expr RS  expr { $$ = emitop(&$1,&$3,ishr,nop); }
+        | expr '+' expr { $$ = emitop(&$1, &$3, iadd, fadd); } 
+        | expr '-' expr { $$ = emitop(&$1,&$3,isub,fsub); }
+        | expr '*' expr { $$ = emitop(&$1,&$3,imul,fmul); }
+        | expr '/' expr { $$ = emitop(&$1,&$3,idiv,fdiv); }
+        | expr '%' expr { $$ = emitop(&$1,&$3,irem,nop); }
+        | '!' expr
+		{
+			$$.type = NULL;
+			// If expr1 is not short-circuited
+			if ($2.type) {
+				if (isint($2.type)) {
+					emit(ineg);
+					emit(iconst_1);
+					emit(iadd);
+					$$ = $2;
+				} else {
+					error("Type error");
+				}
+			} else {
+				$$.falselist = $2.truelist;
+				$$.truelist = $2.falselist;
+			}
+		}
         | '~' expr      { error("~ operator not implemented"); }
         | '+' expr %prec '!'
                         { $$ = $2; }
@@ -447,21 +500,48 @@ expr    : ID   '=' expr { $$ = emitas($1, &$3, nop, nop); }
 			  else
 			  	error("invalid use of $# in function");
 			}
-        | PP ID         { error("pre ++ operator not implemented"); }
-        | NN ID         { error("pre -- operator not implemented"); }
-        | ID PP         { error("post ++ operator not implemented"); }
-        | ID NN         { error("post -- operator not implemented"); }
-        | ID            { error("variable use not implemented"); }
+        | PP ID         { $$ = emitinc($2,0,iadd,fadd); }
+        | NN ID         { $$ = emitinc($2,0,isub,fsub); }
+        | ID PP         { $$ = emitinc($1,1,iadd,fadd); }
+        | ID NN         { $$ = emitinc($1,1,isub,fsub);}
+        | ID
+		{
+        		int place = getplace(top_tblptr, $1);
+    			Type type = gettype(top_tblptr, $1);
+    			if(isint(type)) {
+    				if(getlevel(top_tblptr,$1) == 0) {
+    					emit3(getstatic, place);
+    				} else {
+    				  	emit2(iload,place);
+    				} 
+    			} else if (isfloat(type)){
+    				if(getlevel(top_tblptr,$1) == 0){
+    					emit3(getstatic, place);
+    				} else { 
+    					emit2(fload,place);
+    				}
+    			}
+    			$$.type = type;
+        	}
         | INT8          { emit2(bipush, $1); }
         | INT16         { emit3(sipush, $1); }
         | INT32         { emit2(ldc, constant_pool_add_Integer(&cf, $1)); }
 	| FLT		{ emit2(ldc, constant_pool_add_Float(&cf, $1)); }
 	| STR		{ emit2(ldc, constant_pool_add_String(&cf, constant_pool_add_Utf8(&cf, $1))); }
 	| ID '(' exprs ')'
-			{ /* TASK 3: TO BE COMPLETED */
-			  error("function call not implemented");
+		{
+			Type type = gettype(top_tblptr, $1);
+			$$.type = mkret(type);
+			if ($$.type && getlevel(top_tblptr, $1) == 0) {
+				emit3(invokestatic, constant_pool_add_Methodref(&cf, cf.name, $1->lexptr, type));
+			} else {
+				error("Invalid function call");
 			}
+			$$.truelist = $$.falselist = NULL;
+		}
         ;
+Pexpr   : expr P { $$ = $1; }
+	;
 
 K       : /* empty */   { $$ = pc; emit3(ifne, 0); }
         ;
@@ -480,6 +560,9 @@ N       : /* empty */   { $$ = pc;	/* location of inst. to backpatch */
         ;
 
 P       : /* empty */   { emit(pop); }
+        ;
+
+B       : /* empty */    }
         ;
 
 %%
