@@ -15,26 +15,36 @@ typedef struct Symbol Symbol;
 
 typedef const char *Type;	/* a type descriptor (JVM) */
 
-struct Entry
+typedef struct Entry
 {
 	struct Entry *next;	/* next in linked list or NULL */
 	Symbol *sym;		/* symbol (identifier) */
 	Type type;		/* its type */
 	int place;		/* its place */
 	struct Table *table;	/* its table (when entry is a function) */
-};
+} Entry;
 
-typedef struct Entry Entry;
-
-struct Table
+typedef struct Table
 {
 	struct Table *prev;	/* the previous table (parent) */
 	struct Entry *list;	/* linked list of entries */
 	int width;		/* cumulative width of entries in table */
 	int level;		/* global (0) or local (1) level */
-};
+} Table;
 
-typedef struct Table Table;
+typedef struct Expr
+{
+	Backpatchlist *truelist;	/* stores a linked list of locs to be backpatched for if true */
+	Backpatchlist *falselist;	/* stores a linked list of locs to be backpatched for if false */
+	Type type;			/* stores the type of the expression; NULL if short-circuit */
+} Expr;
+
+typedef struct Backpatchlist
+{
+	struct Backpatchlist *next;	/* the next node on the Backpatchlist linked list */
+	// pc is an int, so may loc an int as well
+	int loc;			/* stores each node's (part of the expr's) location for backpatching */
+} Backpatchlist;
 
 extern Symbol *lookup(const char*);
 extern Symbol *insert(const char*, int);
