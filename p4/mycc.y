@@ -1,6 +1,7 @@
 /*
 Price, Chris, Gorana, Lian
 GCSC 554
+Project: P4
 File: mycc.y
 */
 
@@ -8,6 +9,10 @@ File: mycc.y
 
 #include "lex.yy.h"
 #include "global.h"
+
+#define MAXLEVEL 10  // Adjust based on the maximum nesting level of loops
+static List *breaks[MAXLEVEL];
+static int level = -1;  // Used to track the current loop level
 
 #define MAXFUN 100
 #define MAXFLD 100
@@ -148,6 +153,30 @@ func	: MAIN '(' ')' Mmain block
 			{ /* TASK 3: TO BE COMPLETED */
 			}
 	;
+	| head block    { emit(return_);
+                          // length of bytecode is in the emitter's pc variable
+                          cf.methods[cf.method_count].code_length = pc;
+                          // must copy code to make it persistent
+                          cf.methods[cf.method_count].code = copy_code();
+                          if (!cf.methods[cf.method_count].code)
+                                error("Out of memory");
+                          // max operand stack size of this method
+                          cf.methods[cf.method_count].max_stack = 100;
+                          // local variables
+                          cf.methods[cf.method_count].max_locals = top_offset;
+                          // advance to next method to store in method array
+                          cf.method_count++;
+                          if (cf.method_count > MAXFUN)
+                                error("Max number of functions exceeded");
+                          // complete the enterproc table pointer
+                          $1->table = top_tblptr;
+                          // add width information to table
+                          addwidth(top_tblptr, top_offset);
+                          // exit the local scope by popping
+                          pop_tblptr;
+                          pop_offset;
+                        }
+        ;
 
 Mmain	:		{ int label1, label2;
 			  Table *table;
@@ -237,7 +266,7 @@ list	: list ',' ID
             			cf.field_count++;
            			enter(top_tblptr, $3, $1, constant_pool_add_Fieldref(&cf, cf.name, $3->lexptr, $1));
            		
-			} else if(top_tblptr -> level > 0){
+			} else {
          			enter(top_tblptr, $3, $1, top_offset++);
          		}
         		
@@ -252,13 +281,26 @@ list	: list ',' ID
             			cf.field_count++;
             			enter(top_tblptr, $2, $1, constant_pool_add_Fieldref(&cf, cf.name, $2->lexptr, $1));
 
-			  } else if(top_tblptr -> level > 0) {
+			  } else {
 			  	enter(top_tblptr, $2, $1, top_offset++);
-			  	
 			  }
 			  $$ = $1;
 	;
-
+head    : type ID '(' Margs args ')'
+                        { // the type of the function is a JVM type descriptor
+                          Type type = mkfun($5, $1);
+                          // method has public access and is static
+                          cf.methods[cf.method_count].access = ACC_PUBLIC | ACC_STATIC;
+                          // method name (from symbol table)
+                          cf.methods[cf.method_count].name = $2->lexptr;
+                          // method descriptor
+                          cf.methods[cf.method_count].descriptor = type;
+                          // enter the incomplete function in the global table
+                          $$ = enterproc(snd_tblptr, $2, type, NULL);
+                          ret_type = $1;
+                        }
+        ;
+ 
 ptr	: /* empty */	{ $$ = 0; }
 	| '*'		{ $$ = 1; }
 	;
@@ -281,7 +323,7 @@ stmt    : ';'
 			  backpatch($5, pc - $5);
 			}
         | IF '(' expr ')' M L stmt ELSE N L stmt
-                {
+                	{
 			if (!$3.type) {
 				backpatchlist($3.truelist, $6);
 				backpatchlist($3.falselist, $10);
@@ -290,30 +332,42 @@ stmt    : ';'
 			}
 			backpatch($5, $10 - $5);
 			backpatch($9, pc - $5);
-		}
-
-	| WHILE '(' L expr ')' M L stmt N
-                {
-			if (!$4.type) {
-				backpatchlist($4.truelist, $7);
-				backpatchlist($4.falselist, pc);
-			} else if (!isint($4.type)) {
-				error("Type error WHILE");
 			}
-			backpatch($6, pc - $6);
-			backpatch($9, $3 - $9);
-		}
 
-        | DO L stmt WHILE '(' expr ')' K ';'
-		{
-			if (!$6.type) {
-				backpatchlist($6.truelist, $2);
-				backpatchlist($6.falselist, pc);
-			} else if (!isint($6.type)) {
-				error("Type error DOWHILE");
+	| WHILE '(' L expr ')' M B L stmt N
+			{
+			    if (!$4.type) {
+			        backpatchlist($4.truelist, $8);
+			        backpatchlist($4.falselist, pc);
+			    } else if (!isint($4.type)) {
+			        error("Type error WHILE");
+			    }
+			
+			    backpatch($6, pc - $6);
+			    backpatch($10, $3 - $10);
+			
+			    // Backpatch `break` statements for this level
+			    backpatchlist(breaks[level--], pc);
 			}
-			backpatch($8,$2-$8);
-		}
+
+
+
+        | DO B L stmt WHILE '(' expr ')' K ';'
+			{
+			    if (!$6.type) {
+			        backpatchlist($6.truelist, $2);
+			        backpatchlist($6.falselist, pc);
+			    } else if (!isint($6.type)) {
+			        error("Type error DOWHILE");
+			    }
+			
+			    backpatch($8, $2 - $8);
+			
+			    // Backpatch `break` statements for this level
+			    backpatchlist(breaks[level--], pc);
+			}
+
+
         | FOR '(' Pexpr ';' L expr M N ';' L Pexpr N ')' B L stmt N
                         { if (!$6.type)
 			  {	backpatchlist($6.truelist, $15);
@@ -342,9 +396,20 @@ stmt    : ';'
 			        }
 			  }
 			}
-	| BREAK ';'	{ /* BREAK is optional to implement (see Pr3) */
-			  error("break not implemented");
-			}
+	| BREAK ';' 
+		{
+		    // Ensure `break` is used inside a loop
+		    if (level < 0) {
+		        error("break statement not within loop");
+		    } else {
+		        // Add the current program counter to the `breaks[level]` list
+		        breaks[level] = mergelist(breaks[level], makelist(pc));
+		
+		        // Emit a placeholder instruction for the break 
+		        emit(JUMP, 0);  // `emit` is a function that emits bytecode instructions
+		    }
+		}
+
         | '{' stmts '}'
         | error ';'     { yyerrok; }
         ;
@@ -355,75 +420,152 @@ exprs	: exprs ',' expr
 	;
 
 /* TASK 1: TO BE COMPLETED (use pr3 code, then work on assign operators): */
-expr    : ID   '=' expr { $$ = emitas($1, &$3, nop, nop); }
-        | ID   PA  expr { $$ = emitas($1, &$3, iadd, fadd); }
-        | ID   NA  expr { $$ = emitas($1, &$3, isub, fsub); }
-        | ID   TA  expr { $$ = emitas($1, &$3, imul, fmul); }
-        | ID   DA  expr { $$ = emitas($1, &$3, idiv, fdiv); }
-        | ID   MA  expr { $$ = emitas($1, &$3, irem, nop); }
-        | ID   AA  expr { $$ = emitas($1, &$3, iand, nop); }
-        | ID   XA  expr { $$ = emitas($1, &$3, ixor, nop); }
-        | ID   OA  expr { $$ = emitas($1, &$3, ior, nop); }
-        | ID   LA  expr { $$ = emitas($1, &$3, ishl, nop); }
-        | ID   RA  expr { $$ = emitas($1, &$3, ishr, nop); }
-        | expr OR L expr
-			{ $$.type = NULL;
-			  if ($1.type && $4.type)
-			  {	// both operands are non-short-circuit
-			  	if (isint($1.type) && isint($4.type)) {
-			  		emit3(ifeq, 5);
-			  		emit(pop);
-					emit(iconst_1);
-					$$ = circuit(&$4);
-			  	} else {
-					error("Type error");
-				}
-			  } else if ($4.type) {
-			  	Expr e = circuit(&$4);
-			  	$$.truelist = mergelist($1.truelist, e.truelist);
-				backpatchlist($1.falselist, $3);
-				$$.falselist = e.falselist;
-			  } else if ($1.type) {
-			  	Expr e = circuit(&$1);
-			  	$$.truelist = mergelist(e.truelist, $4.truelist);
-				backpatchlist(e.falselist, $3);
-				$$.falselist = $4.falselist;
-			  } else {
-			  	$$.truelist = mergelist($1.truelist, $4.truelist);
-				backpatchlist($1.falselist, $3);
-				$$.falselist = $4.falselist;
-			  }
-			}
-        | expr AN  expr {
-			$$.type = NULL;
-			if ($1.type && $4.type) {
-				if (isint($1.type) && isint($4.type)) {
-					emit3(ifne, 5);
-					emit(pop);
-					emit(iconst_0);
-					$$ = circuit(&$4);
-				} else {
-					error("Type error");
-				}
-			} else if ($4.type) {
-				Expr e = circuit(&$4);
-				$$.falselist = mergelist($1.falselist, e.falselist);
-				backpatchlist($1.truelist, $3);
-				$$.truelist = e.truelist;
-			} else if ($1.type) {
-				Expr e = circuit(&$1);
-				$$.falselist = mergelist(e.falselist, $4.falselist);
-				backpatchlist(e.truelist, $3);
-				$$.truelist = $4.truelist;
-			} else {
-				$$.falselist = mergelist($1.falselist, $4.falselist);
-				backpatchlist($1.truelist, $3);
-				$$.truelist = $4.truelist;
-			}
-			}
-        | expr '|' expr { error("| operator not implemented"); }
-        | expr '^' expr { error("^ operator not implemented"); }
-        | expr '&' expr { error("& operator not implemented"); }
+expr    : ID   '=' expr { emit(dup); emit2(istore, $1->localvar); }
+        // ID += expr: Load the current value of ID, add expr, and store the result back into ID
+        | ID   PA  expr { emit2(iload , $1->localvar); emit(iadd); emit(dup); emit2(istore, $1->localvar); }
+        // ID -= expr: Load the current value of ID, subtract expr, and store the result back into ID
+        | ID   NA  expr { emit2(iload , $1->localvar); emit(swap); emit(isub); emit(dup); emit2(istore, $1->localvar); }
+        // ID *= expr: Load the current value of ID, multiply by expr, and store the result back into ID
+        | ID   TA  expr { emit2(iload , $1->localvar); emit(imul); emit(dup); emit2(istore, $1->localvar); }
+        // ID /= expr: Load the current value of ID, divide by expr, and store the result back into ID
+        | ID   DA  expr { emit2(iload , $1->localvar); emit(swap); emit(idiv); emit(dup); emit2(istore, $1->localvar); }
+        // ID %= expr: Load the current value of ID, calculate the remainder with expr, and store the result back into ID
+        | ID   MA  expr { emit2(iload , $1->localvar); emit(swap); emit(irem); emit(dup); emit2(istore, $1->localvar); }
+        // ID &= expr: Perform bitwise AND on ID and expr, store the result back into ID
+        | ID   AA  expr { emit2(iload , $1->localvar); emit(iand); emit(dup); emit2(istore, $1->localvar); }
+        // ID ^= expr: Perform bitwise XOR on ID and expr, store the result back into ID
+        | ID   XA  expr { emit2(iload , $1->localvar); emit(ixor); emit(dup); emit2(istore, $1->localvar); }
+        // ID |= expr: Perform bitwise OR on ID and expr, store the result back into ID
+        | ID   OA  expr { emit2(iload , $1->localvar); emit(ior); emit(dup); emit2(istore, $1->localvar); }
+        // ID <<= expr: Perform bitwise left shift on ID by expr, store the result back into ID
+        | ID   LA  expr { emit2(iload , $1->localvar); emit(swap); emit(ishl); emit(dup); emit2(istore, $1->localvar); }
+        // ID >>= expr: Perform bitwise right shift on ID by expr, store the result back into ID
+        | ID   RA  expr { emit2(iload , $1->localvar); emit(swap); emit(ishr); emit(dup); emit2(istore, $1->localvar); }
+        // This rule handles the logical OR (||) operator
+	| expr OR L expr {
+	    $$.type = NULL;  // Initialize the type of the result as NULL
+	
+	    // Check if both operands have types
+	    if ($1.type && $4.type) {
+	        // Both operands are non-short-circuiting
+	        if (isint($1.type) && isint($4.type)) {  // Check if both operands are integers
+	            // Emit an instruction that will jump if the first operand is equal to zero
+	            emit3(ifeq, 5);  
+	            emit(pop);  // Pop the result of the first operand (as it's not used after evaluation)
+	            emit(iconst_1);  // Push 1 to the stack (since OR short-circuits to 1 if the first operand is true)
+	            $$ = circuit(&$4);  // Process the second operand using the `circuit` function
+	        } else {
+	            error("Type error");  // Throw a type error if the operands are not of the expected type
+	        }
+	    } else if ($4.type) {
+	        // If only the second operand has a type, handle it as the primary condition
+	        Expr e = circuit(&$4);  // Evaluate the second operand using `circuit`
+	        $$ .truelist = mergelist($1.truelist, e.truelist);  // Merge the true lists of both operands
+	        backpatchlist($1.falselist, $3);  // Backpatch the false list of the first operand
+	        $$ .falselist = e.falselist;  // Set the false list of the result to the false list of the second operand
+	    } else if ($1.type) {
+	        // If only the first operand has a type, handle it as the primary condition
+	        Expr e = circuit(&$1);  // Evaluate the first operand using `circuit`
+	        $$ .truelist = mergelist(e.truelist, $4.truelist);  // Merge the true lists of both operands
+	        backpatchlist(e.falselist, $3);  // Backpatch the false list of the first operand
+	        $$ .falselist = $4.falselist;  // Set the false list of the result to the false list of the second operand
+	    } else {
+	        // If neither operand has a type, merge both true and false lists
+	        $$ .truelist = mergelist($1.truelist, $4.truelist);  // Merge true lists from both operands
+	        backpatchlist($1.falselist, $3);  // Backpatch the false list of the first operand
+	        $$ .falselist = $4.falselist;  // Set the false list of the result to the false list of the second operand
+	    }
+	}
+	
+	// This rule handles the logical AND (&&) operator
+	| expr AN expr {
+	    $$.type = NULL;  // Initialize the type of the result as NULL
+	
+	    // Check if both operands have types
+	    if ($1.type && $4.type) {
+	        if (isint($1.type) && isint($4.type)) {  // Check if both operands are integers
+	            // Emit an instruction that will jump if the first operand is not equal to zero
+	            emit3(ifne, 5);  
+	            emit(pop);  // Pop the result of the first operand (as it's not used after evaluation)
+	            emit(iconst_0);  // Push 0 to the stack (since AND short-circuits to 0 if the first operand is false)
+	            $$ = circuit(&$4);  // Process the second operand using the `circuit` function
+	        } else {
+	            error("Type error");  // Throw a type error if the operands are not of the expected type
+	        }
+	    } else if ($4.type) {
+	        // If only the second operand has a type, handle it as the primary condition
+	        Expr e = circuit(&$4);  // Evaluate the second operand using `circuit`
+	        $$ .falselist = mergelist($1.falselist, e.falselist);  // Merge the false lists of both operands
+	        backpatchlist($1.truelist, $3);  // Backpatch the true list of the first operand
+	        $$ .truelist = e.truelist;  // Set the true list of the result to the true list of the second operand
+	    } else if ($1.type) {
+	        // If only the first operand has a type, handle it as the primary condition
+	        Expr e = circuit(&$1);  // Evaluate the first operand using `circuit`
+	        $$ .falselist = mergelist(e.falselist, $4.falselist);  // Merge the false lists of both operands
+	        backpatchlist(e.truelist, $3);  // Backpatch the true list of the first operand
+	        $$ .truelist = $4.truelist;  // Set the true list of the result to the true list of the second operand
+	    } else {
+	        // If neither operand has a type, merge both false and true lists
+	        $$ .falselist = mergelist($1.falselist, $4.falselist);  // Merge false lists from both operands
+	        backpatchlist($1.truelist, $3);  // Backpatch the true list of the first operand
+	        $$ .truelist = $4.truelist;  // Set the true list of the result to the true list of the second operand
+	    }
+	}
+
+        | expr '|' expr {
+	    if ($1.type && $3.type) {
+	        // Both operands must be integers for bitwise OR
+	        if (isint($1.type) && isint($3.type)) {
+	            emit2(iload, $1.localvar);  // Load the first operand
+	            emit2(iload, $3.localvar);  // Load the second operand
+	            emit(ior);  // Bitwise OR operation
+	            emit(dup);  // Duplicate the result
+	            emit2(istore, $1.localvar);  // Store the result back in the first operand
+	            $$ = $1;  // The result of the operation is stored in $1
+	        } else {
+	            error("Type error: operands must be integers for bitwise OR");
+	        }
+	    } else {
+	        error("Type error: both operands must have a type for bitwise OR");
+	    }
+	}
+
+        | expr '^' expr {
+	    if ($1.type && $3.type) {
+	        // Both operands must be integers for bitwise XOR
+	        if (isint($1.type) && isint($3.type)) {
+	            emit2(iload, $1.localvar);  // Load the first operand
+	            emit2(iload, $3.localvar);  // Load the second operand
+	            emit(ixor);  // Bitwise XOR operation
+	            emit(dup);  // Duplicate the result
+	            emit2(istore, $1.localvar);  // Store the result back in the first operand
+	            $$ = $1;  // The result of the operation is stored in $1
+	        } else {
+	            error("Type error: operands must be integers for bitwise XOR");
+	        }
+	    } else {
+	        error("Type error: both operands must have a type for bitwise XOR");
+	    }
+	}
+
+        | expr '&' expr {
+	    if ($1.type && $3.type) {
+	        // Both operands must be integers for bitwise AND
+	        if (isint($1.type) && isint($3.type)) {
+	            emit2(iload, $1.localvar);  // Load the first operand
+	            emit2(iload, $3.localvar);  // Load the second operand
+	            emit(iand);  // Bitwise AND operation
+	            emit(dup);  // Duplicate the result
+	            emit2(istore, $1.localvar);  // Store the result back in the first operand
+	            $$ = $1;  // The result of the operation is stored in $1
+	        } else {
+	            error("Type error: operands must be integers for bitwise AND");
+	        }
+	    } else {
+	        error("Type error: both operands must have a type for bitwise AND");
+	    }
+	}
+
         | expr EQ  expr { 
 				emitcmp(&$1, &$3, if_icmpeq); 
 			}
@@ -477,7 +619,21 @@ expr    : ID   '=' expr { $$ = emitas($1, &$3, nop, nop); }
 				$$.truelist = $2.falselist;
 			}
 		}
-        | '~' expr      { error("~ operator not implemented"); }
+        | '~' expr {
+	    if ($2.type) {
+	        // Operand must be an integer for bitwise NOT
+	        if (isint($2.type)) {
+	            emit2(iload, $2.localvar);  // Load the operand
+	            emit(ineg);  // Perform bitwise negation (bitwise NOT is equivalent to negation in this context)
+	            $$ = $2;  // The result is stored in $2 (the operand)
+	        } else {
+	            error("Type error: operand must be an integer for bitwise NOT");
+	        }
+	    } else {
+	        error("Type error: operand must have a type for bitwise NOT");
+	    }
+	}
+
         | '+' expr %prec '!'
                         { $$ = $2; }
         | '-' expr %prec '!'
@@ -562,8 +718,8 @@ N       : /* empty */   { $$ = pc;	/* location of inst. to backpatch */
 P       : /* empty */   { emit(pop); }
         ;
 
-B       : /* empty */    }
-        ;
+B 	: /* empty */ { }
+	;
 
 %%
 
