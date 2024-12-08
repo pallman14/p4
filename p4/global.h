@@ -1,53 +1,97 @@
+/*
+Price, Chris, Gorana, Lian
+GCSC554
+Project: P4
+File: global.h
+*/
+
 #ifndef GLOBAL_H
 #define GLOBAL_H
 
-#include "javaclass.h"
-#include "bytecode.h"
+#include "javaclass.h"  // Include definitions related to Java class handling
+#include "bytecode.h"   // Include definitions for bytecode operations
 
+/* 
+  Structure representing a symbol in the compiler.
+  Typically used to store identifiers and related information.
+*/
 struct Symbol
 {
-	const char *lexptr;
-	int  token;
-	int  localvar;		/* not needed any longer */
+    const char *lexptr;  // Pointer to the lexeme (name of the symbol)
+    int token;           // Token associated with the symbol (e.g., identifier token)
+    int localvar;        // (Deprecated) Previously used for local variable tracking
 };
 
-typedef struct Symbol Symbol;
+typedef struct Symbol Symbol;  // Typedef for convenience
 
-typedef const char *Type;	/* a type descriptor (JVM) */
+/*
+  Type descriptor used in the JVM.
+  Represents the type of a symbol or expression.
+ */
+typedef const char *Type;
 
+/* Structure representing an entry in a symbol table. 
+Each entry stores information about a symbol, including its type, position, and scope. */
 typedef struct Entry
 {
-	struct Entry *next;	/* next in linked list or NULL */
-	Symbol *sym;		/* symbol (identifier) */
-	Type type;		/* its type */
-	int place;		/* its place */
-	struct Table *table;	/* its table (when entry is a function) */
+    struct Entry *next;   // Pointer to the next entry in the linked list or NULL
+    Symbol *sym;          // Pointer to the associated symbol (identifier)
+    Type type;            // Type descriptor of the symbol
+    int place;            // Place or position (e.g., local variable index or memory offset)
+    struct Table *table;  // Pointer to a table (used when the entry represents a function)
 } Entry;
 
+/*
+  Structure representing a symbol table.
+  Maintains a list of symbols within a particular scope (global or local).
+ */
 typedef struct Table
 {
-	struct Table *prev;	/* the previous table (parent) */
-	struct Entry *list;	/* linked list of entries */
-	int width;		/* cumulative width of entries in table */
-	int level;		/* global (0) or local (1) level */
+    struct Table *prev;   // Pointer to the previous (parent) table for nested scopes
+    struct Entry *list;   // Linked list of entries in the current table
+    int width;            // Cumulative width of entries (e.g., total memory used)
+    int level;            // Scope level: 0 for global, 1 for local
 } Table;
 
+/*
+  Structure representing an expression.
+  Stores information for expressions with backpatching and type data.
+ */
 typedef struct Expr
 {
-	Backpatchlist *truelist;	/* stores a linked list of locs to be backpatched for if true */
-	Backpatchlist *falselist;	/* stores a linked list of locs to be backpatched for if false */
-	Type type;			/* stores the type of the expression; NULL if short-circuit */
+    Backpatchlist *truelist;  // List of locations to backpatch if the expression evaluates to true
+    Backpatchlist *falselist; // List of locations to backpatch if the expression evaluates to false
+    Type type;                // Type of the expression; NULL for short-circuit evaluation
 } Expr;
 
+/*
+  Structure representing a backpatch list.
+  Used to keep track of locations that need to be backpatched.
+ */
 typedef struct Backpatchlist
 {
-	struct Backpatchlist *next;	/* the next node on the Backpatchlist linked list */
-	// pc is an int, so may loc an int as well
-	int loc;			/* stores each node's (part of the expr's) location for backpatching */
+    struct Backpatchlist *next;  // Pointer to the next node in the backpatch list
+    int loc;                     // Location to be backpatched (e.g., program counter)
 } Backpatchlist;
 
-extern Symbol *lookup(const char*);
-extern Symbol *insert(const char*, int);
+//Function declarations for symbol table operations.
+/* Searches for a symbol in the symbol table. 
+  Parameters:
+    const char *name - The name of the symbol to look up.
+  Returns:
+    A pointer to the `Symbol` if found; otherwise, NULL.
+ */
+extern Symbol *lookup(const char* name);
+
+/* 
+  Inserts a new symbol into the symbol table.
+  Parameters:
+    const char *name - The name of the symbol to insert.
+    int token        - The token associated with the symbol.
+  Returns:
+    A pointer to the newly inserted `Symbol`.
+ */
+extern Symbol *insert(const char* name, int token);
 
 // create a new table and link to previous table in hierarchy:
 extern Table *mktable(Table *prev);
