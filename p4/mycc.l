@@ -1,8 +1,16 @@
-/* TO BE COMPLETED */
+/* 
+Price, Chris, Gorana, Lian
+GCSC554
+Project:P4
+File: mycc.l
+*/
 
 %option noyywrap
 %option yylineno
 %option nounistd
+%option nounput
+%option noinput
+%option always-interactive
 
 %{
 #include "global.h"
@@ -32,7 +40,8 @@ str             \"(\\\"|\\\n|[^"])*\"
 %%
 
 [ \t\v\n\f\r]                  /* skip white space */
-___                            /* TO BE COMPLETED: ignore inline and multiline comments */
+\/\/.*				/* ignore inline comments */
+\/\*([^*]|(\*+[^*/]))*\*+\/    /* ignore multiline comments */
 {id}                           { return install_id(); }
 {oct}                          { return install_oct(); }
 {hex}                          { return install_hex(); }
