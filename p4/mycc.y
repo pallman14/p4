@@ -38,6 +38,28 @@ static int offsp = -1;
 /* flag to indicate we are compiling main's body (to differentiate 'return') */
 static int is_in_main = 0;
 
+/* Stores the type that a particular method returns */
+static Type ret_type;
+
+/* Coerce value on top of stack */
+static Type coerce1(Expr *expr, Type type);
+/* Coerce value under top of stack */
+static Type coerce2(Expr *expr, Type type);
+
+/* Convert integer to short-circuit, no change when already short circuit */
+static Expr circuit(Expr *expr);
+/* Convert short-circuit logic to push an int 0 or 1 by backpatching */
+static Type decircuit(Expr *expr);
+/* Coerce and return the wider type (int or float) of two types */
+static Type widen(Expr *expr1, Expr *expr2);
+/* Emit float/integer operation */
+static Expr emitop(Expr *expr1, Expr *expr2, int iop, int fop);
+/* Emit float/integer assignment operation */
+static Expr emitas(Symbol *sym, Expr *expr, int iop, int fop);
+/*emit assignment ops for increment assign(id++ and variants) prepost variable  0 = pre, 1 = post*/
+static Expr emitinc(Symbol *sym,int prepost,int iop,int fop);
+static Expr emitcmp(Expr *exp1, Expr *exp2, int icmp);
+
 %}
 
 /* declare YYSTYPE attribute types of tokens and nonterminals */
@@ -66,7 +88,7 @@ static int is_in_main = 0;
 
 /* declare tokens for keywords */
 /* Note: install_id() returns Symbol* for keywords and identifiers */
-%token <sym> BREAK CHAR DO ELSE FLOAT FOR IF INT MAIN RETURN VOID WHILE
+%token <sym> BREAK CHAR DO ELSE FLOAT FOR IF INT MAIN RETURN VOID WHILE TRUE FALSE
 
 /* declare operator tokens */
 %right '=' PA NA TA DA MA AA XA OA LA RA
@@ -85,11 +107,19 @@ static int is_in_main = 0;
 
 /* Declare attribute types for marker nonterminals, such as K L M and N */
 /* TODO: TO BE COMPLETED WITH ADDITIONAL NONMARKERS AS NECESSARY */
+%type <exp> expr Pexpr
+
 %type <loc> K L M N P B
 
 %type <typ> type list args
 
 %type <num> ptr
+
+%type <Table *> func
+
+%type <ent> head ftype
+
+
 
 %%
 
@@ -149,11 +179,8 @@ func	: MAIN '(' ')' Mmain block
 			  // enter the function in the global table
 			  enterproc(top_tblptr, $1, type, table);
 			}
-	| type ID '(' Margs args ')' block
-			{ /* TASK 3: TO BE COMPLETED */
-			}
-	;
-	| head block    { emit(return_);
+	| head block    
+			{ emit(return_);
                           // length of bytecode is in the emitter's pc variable
                           cf.methods[cf.method_count].code_length = pc;
                           // must copy code to make it persistent
@@ -175,8 +202,10 @@ func	: MAIN '(' ')' Mmain block
                           // exit the local scope by popping
                           pop_tblptr;
                           pop_offset;
-                        }
-        ;
+                 	}
+	
+	;
+	
 
 Mmain	:		{ int label1, label2;
 			  Table *table;
@@ -285,8 +314,9 @@ list	: list ',' ID
 			  	enter(top_tblptr, $2, $1, top_offset++);
 			  }
 			  $$ = $1;
+		}
 	;
-head    : type ID '(' Margs args ')'
+head    : ftype ID '(' Margs args ')'
                         { // the type of the function is a JVM type descriptor
                           Type type = mkfun($5, $1);
                           // method has public access and is static
@@ -300,6 +330,12 @@ head    : type ID '(' Margs args ')'
                           ret_type = $1;
                         }
         ;
+ftype   : type ID '(' 
+		{
+			ret_type = $1;
+			$$ ->sym = $2;
+		}
+	;
  
 ptr	: /* empty */	{ $$ = 0; }
 	| '*'		{ $$ = 1; }
