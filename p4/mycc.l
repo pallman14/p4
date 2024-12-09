@@ -1,7 +1,7 @@
 /* 
 Price, Chris, Gorana, Lian
 GCSC554
-Project:P4
+Project: p4
 File: mycc.l
 */
 
@@ -15,8 +15,6 @@ File: mycc.l
 %{
 #include "global.h"
 #include "mycc.h"
-
-static int localvar = 3;
 
 static int install_id();
 static int install_int();
@@ -40,7 +38,7 @@ str             \"(\\\"|\\\n|[^"])*\"
 %%
 
 [ \t\v\n\f\r]                  /* skip white space */
-\/\/.*				/* ignore inline comments */
+\/\/.*						   /* ignore inline comments */
 \/\*([^*]|(\*+[^*/]))*\*+\/    /* ignore multiline comments */
 {id}                           { return install_id(); }
 {oct}                          { return install_oct(); }
@@ -79,24 +77,26 @@ str             \"(\\\"|\\\n|[^"])*\"
 
 %%
 
-/* install_id - add identifier to symbol table if not already there */
+// Function implementations for processing specific tokens
+
+/* install_id - Adds an identifier to the symbol table if not already present. */
 static int install_id()
 {
-	yylval.sym = lookup(yytext);
+	yylval.sym = lookup(yytext); // Look up identifier in the symbol table.
 
-	if (!yylval.sym)
+	if (!yylval.sym)             // If not found, insert it.
 	{
 		yylval.sym = insert(yytext, ID);
-		yylval.sym->localvar = localvar++;
+		/*	yylval.sym->localvar = localvar++; */
 	}
 
-	return yylval.sym->token;
+	return yylval.sym->token;    // Return the token type.
 }
 
-/* install_int - convert decimal yytext[] to INT8, INT16, or INT32 */
+/* install_int - Converts a decimal integer to INT8, INT16, or INT32 based on size. */
 static int install_int()
 {
-	sscanf(yytext, "%u", &yylval.num);
+	sscanf(yytext, "%u", &yylval.num); // Convert string to unsigned integer.
 
 	if (yylval.num < 128)
 		return INT8;
@@ -107,24 +107,10 @@ static int install_int()
 	return INT32;
 }
 
-/* install_oct - convert octal yytext[] to INT8, INT16, or INT32 */
+/* install_oct - Converts an octal integer to INT8, INT16, or INT32. */
 static int install_oct()
 {
-	sscanf(yytext, "%o", &yylval.num);
-
-  	if (yylval.num < 128)
-		return INT8;
-
-	if (yylval.num < 32368)
-		return INT16;
-
-	return INT32;
-}
-
-/* install_hex - convert hexadecimal yytext[] to INT8, INT16, or INT32 */
-static int install_hex()
-{
-	sscanf(yytext, "%x", &yylval.num);
+	sscanf(yytext, "%o", &yylval.num); // Convert string to octal integer.
 
 	if (yylval.num < 128)
 		return INT8;
@@ -135,34 +121,48 @@ static int install_hex()
 	return INT32;
 }
 
-/* install_chr - convert ASCII character yytext[1] to INT8 */
+/* install_hex - Converts a hexadecimal integer to INT8, INT16, or INT32. */
+static int install_hex()
+{
+	sscanf(yytext, "%x", &yylval.num); // Convert string to hexadecimal integer.
+
+	if (yylval.num < 128)
+		return INT8;
+
+	if (yylval.num < 32368)
+		return INT16;
+
+	return INT32;
+}
+
+/* install_chr - Converts an ASCII character to INT8. */
 static int install_chr()
 {
 	char c;
 
-	sscanf(yytext + 1, "%c", &c);
-	yylval.num = (int)c;
+	sscanf(yytext + 1, "%c", &c);  // Extract character from input.
+	yylval.num = (int)c;          // Store character as integer.
 
 	return INT8;
 }
 
-/* install_fp - convert float yytext[] into float FLT */
+/* install_fp - Converts a floating-point literal to a float (FLT). */
 static int install_fp()
 {
-	sscanf(yytext, "%g", &yylval.flt);
+	sscanf(yytext, "%g", &yylval.flt); // Convert string to floating-point value.
 
 	return FLT;
 }
 
-/* install_str - duplicate yytext[] string without the quotes */
+/* install_str - Duplicates a string literal, removing the enclosing quotes. */
 static int install_str()
 {
-	yylval.str = (char*)malloc(yyleng - 1);
+	yylval.str = (char*)malloc(yyleng - 1); // Allocate memory for string.
 
 	if (yylval.str)
 	{
-		strcpy(yylval.str, yytext + 1);
-		yylval.str[yyleng - 2] = '\0';
+		strcpy(yylval.str, yytext + 1);       // Copy string without the first quote.
+		yylval.str[yyleng - 2] = '\0';       // Remove the last quote.
 	}
 
 	return STR;
